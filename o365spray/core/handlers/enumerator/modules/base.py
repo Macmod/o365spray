@@ -38,6 +38,7 @@ class EnumeratorBase(BaseHandler):
         timeout: int = 25,
         proxy: Union[str, Dict[str, str]] = None,
         workers: int = 5,
+        conlimit: int = 10000,
         writer: bool = True,
         sleep: int = 0,
         jitter: int = 0,
@@ -89,6 +90,7 @@ class EnumeratorBase(BaseHandler):
         self.jitter = jitter
         self.proxy_url = proxy_url
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+        self.conlimit = conlimit
 
         # Internal exit handler
         self.exit = False
@@ -137,7 +139,7 @@ class EnumeratorBase(BaseHandler):
         self,
         userlist: List[str],
         password: str = "Password1",
-        domain: str = None,
+        domain: str = None
     ):
         """Asyncronously Send HTTP Requests to enumerate a list of users.
         This method's params override the class' level of params.
@@ -156,18 +158,22 @@ class EnumeratorBase(BaseHandler):
         if not domain:
             raise ValueError(f"Invalid domain for user enumeration: '{domain}'")
 
-        blocking_tasks = [
-            self.loop.run_in_executor(
-                self.executor,
-                partial(
-                    self._enumerate,
-                    domain=domain,
-                    user=user,
-                    password=password,
-                ),
+        async def aenum(domain, user, password):
+            return self._enumerate(domain=domain, user=user, password=password)
+
+        blocking_tasks = set()
+
+        for user in userlist:
+            if len(blocking_tasks) >= self.conlimit:
+                _done, blocking_tasks = await asyncio.wait(
+                    blocking_tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+
+            blocking_tasks.add(
+                self.loop.create_task(
+                    aenum(domain, user, password)
+                )
             )
-            for user in userlist
-        ]
 
         if blocking_tasks:
             await asyncio.wait(blocking_tasks)
